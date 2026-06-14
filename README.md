@@ -6,7 +6,7 @@ Aegis universal debug runtime project for Capcom **RE Engine** targets.
 
 1. Allocates a console on DLL load.
 2. Enumerates loaded modules and PE exports.
-3. Detects RE-family processes such as `re2.exe`, `re8GEDemo.exe`, `dmc5.exe`, `mhrise.exe`, and Capcom Arcade Stadium executables.
+3. Detects RE Engine targets generically from runtime metadata/TDB evidence, with known process names such as `re2.exe`, `re8GEDemo.exe`, `dmc5.exe`, `mhrise.exe`, and Capcom Arcade Stadium executables used only as fast-path hints.
 4. Starts the internal ImGui overlay. Press `F4` to toggle the menu.
 5. Dumps the generic module/export SDK.
 6. Scans loaded RE-family PE images for `via.*` and `app.*` metadata strings and writes a no-offset RE type SDK.

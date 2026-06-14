@@ -41,6 +41,13 @@ namespace
         std::uint32_t flags = AegisUniversalSignature_None;
     };
 
+    struct ReEvidence
+    {
+        std::uint32_t tdbMagicCount = 0;
+        std::uint32_t viaMarkerCount = 0;
+        std::uint32_t appMarkerCount = 0;
+    };
+
     std::mutex g_mutex;
     bool g_initialized = false;
     std::wstring g_processName;
@@ -48,6 +55,8 @@ namespace
     std::wstring g_detectedModule;
     std::vector<ModuleRecord> g_modules;
     std::vector<ExportRecord> g_exports;
+    ReEvidence g_reEvidence;
+    std::wstring g_firstEvidenceModule;
     std::uint32_t g_runtimeFlags = AegisUniversalRuntime_None;
 
     std::wstring ToLower(std::wstring value)
@@ -147,6 +156,19 @@ namespace
     bool SamePathInsensitive(const std::wstring& left, const std::wstring& right)
     {
         return !left.empty() && !right.empty() && ToLower(left) == ToLower(right);
+    }
+
+    bool SameDirectoryAsProcess(const ModuleRecord& module)
+    {
+        if (module.path.empty() || g_processPath.empty())
+            return false;
+
+        const std::size_t moduleSlash = module.path.find_last_of(L"\\/");
+        const std::size_t processSlash = g_processPath.find_last_of(L"\\/");
+        if (moduleSlash == std::wstring::npos || processSlash == std::wstring::npos)
+            return false;
+
+        return ToLower(module.path.substr(0, moduleSlash)) == ToLower(g_processPath.substr(0, processSlash));
     }
 
     std::wstring TempFilePath(const wchar_t* fileName)
@@ -321,6 +343,157 @@ namespace
         return false;
     }
 
+    bool RangeContainsBytes(const std::uint8_t* begin, std::size_t size, const char* needle)
+    {
+        if (!begin || !needle || !needle[0])
+            return false;
+
+        const std::size_t needleLength = std::strlen(needle);
+        if (size < needleLength)
+            return false;
+
+        __try
+        {
+            const auto* end = begin + size - needleLength;
+            for (const auto* cursor = begin; cursor <= end; ++cursor)
+            {
+                if (std::memcmp(cursor, needle, needleLength) == 0)
+                    return true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+        return false;
+    }
+
+    std::uint32_t CountTdbMagicMarkers(const std::uint8_t* begin, std::size_t size, std::uint32_t cap)
+    {
+        if (!begin || size < sizeof(std::uint32_t) || !cap)
+            return 0;
+
+        std::uint32_t count = 0;
+        __try
+        {
+            for (std::size_t offset = 0; offset + sizeof(std::uint32_t) <= size; offset += sizeof(std::uint32_t))
+            {
+                const std::uint32_t value = *reinterpret_cast<const std::uint32_t*>(begin + offset);
+                if (value == 0x00424454u)
+                {
+                    ++count;
+                    if (count >= cap)
+                        break;
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return count;
+        }
+        return count;
+    }
+
+    bool ShouldScanModuleForReEvidence(const ModuleRecord& module)
+    {
+        if (!module.baseAddress || !module.imageSize)
+            return false;
+        if (SamePathInsensitive(module.path, g_processPath))
+            return true;
+        if (!SameDirectoryAsProcess(module))
+            return false;
+
+        const std::wstring name = ToLower(module.name);
+        return name.find(L"re") != std::wstring::npos ||
+            name.find(L"via") != std::wstring::npos ||
+            name.find(L"capcom") != std::wstring::npos ||
+            name.find(L"tdb") != std::wstring::npos ||
+            name.find(L"engine") != std::wstring::npos;
+    }
+
+    bool ScanModuleForReEvidence(const ModuleRecord& module, ReEvidence& evidence)
+    {
+        if (!ShouldScanModuleForReEvidence(module))
+            return false;
+
+        const auto* base = reinterpret_cast<const std::uint8_t*>(module.baseAddress);
+        if (!base)
+            return false;
+
+        __try
+        {
+            const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0)
+                return false;
+
+            const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+            if (nt->Signature != IMAGE_NT_SIGNATURE)
+                return false;
+
+            const auto* section = IMAGE_FIRST_SECTION(nt);
+            for (WORD index = 0; index < nt->FileHeader.NumberOfSections; ++index, ++section)
+            {
+                if (!section->VirtualAddress || !section->Misc.VirtualSize)
+                    continue;
+                if (section->VirtualAddress >= module.imageSize)
+                    continue;
+
+                const std::size_t size = std::min<std::size_t>(
+                    section->Misc.VirtualSize,
+                    module.imageSize - section->VirtualAddress);
+                if (size < 4)
+                    continue;
+
+                const auto* begin = base + section->VirtualAddress;
+                evidence.tdbMagicCount += CountTdbMagicMarkers(begin, size, 8 - std::min<std::uint32_t>(evidence.tdbMagicCount, 8));
+                if (evidence.viaMarkerCount < 8 && RangeContainsBytes(begin, size, "via."))
+                    ++evidence.viaMarkerCount;
+                if (evidence.appMarkerCount < 8 && RangeContainsBytes(begin, size, "app."))
+                    ++evidence.appMarkerCount;
+
+                if ((evidence.tdbMagicCount && evidence.viaMarkerCount) ||
+                    evidence.viaMarkerCount >= 4 ||
+                    (evidence.viaMarkerCount >= 2 && evidence.appMarkerCount >= 2))
+                {
+                    return true;
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+        return false;
+    }
+
+    bool IsStrongReEvidence(const ReEvidence& evidence)
+    {
+        if (evidence.tdbMagicCount && evidence.viaMarkerCount)
+            return true;
+        if (evidence.viaMarkerCount >= 4)
+            return true;
+        return evidence.viaMarkerCount >= 2 && evidence.appMarkerCount >= 2;
+    }
+
+    bool HasStrongReFrameworkSignal()
+    {
+        for (const ModuleRecord& module : g_modules)
+        {
+            const std::wstring name = ToLower(module.name);
+            if (name.find(L"reframework") != std::wstring::npos)
+                return true;
+        }
+        for (const ExportRecord& record : g_exports)
+        {
+            if (record.exportName == "reframework_plugin_initialize" ||
+                record.exportName == "reframework_plugin_required_version")
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     std::vector<ModuleRecord> EnumerateModules()
     {
         std::vector<ModuleRecord> modules;
@@ -379,12 +552,18 @@ namespace
         g_modules = EnumerateModules();
         g_exports.clear();
         g_detectedModule.clear();
+        g_reEvidence = {};
+        g_firstEvidenceModule.clear();
         g_runtimeFlags = AegisUniversalRuntime_None;
 
         for (std::size_t index = 0; index < profile.signatureCount; ++index)
         {
             if (ProcessMatchesSignature(profile.signatures[index]))
+            {
                 g_runtimeFlags |= AegisUniversalRuntime_ProcessHintMatched;
+                if (g_detectedModule.empty())
+                    g_detectedModule = g_processName;
+            }
         }
 
         for (ModuleRecord& module : g_modules)
@@ -420,6 +599,38 @@ namespace
             }
         }
 
+        ReEvidence reEvidence = {};
+        for (ModuleRecord& module : g_modules)
+        {
+            ReEvidence moduleEvidence = {};
+            if (!ScanModuleForReEvidence(module, moduleEvidence))
+                continue;
+
+            reEvidence.tdbMagicCount += moduleEvidence.tdbMagicCount;
+            reEvidence.viaMarkerCount += moduleEvidence.viaMarkerCount;
+            reEvidence.appMarkerCount += moduleEvidence.appMarkerCount;
+            if (g_firstEvidenceModule.empty())
+                g_firstEvidenceModule = module.name;
+
+            module.flags |= AegisUniversalSignature_Module | AegisUniversalSignature_Core;
+            g_runtimeFlags |= AegisUniversalRuntime_ModuleHintMatched | AegisUniversalRuntime_HeuristicHintMatched;
+            if (g_detectedModule.empty())
+                g_detectedModule = module.name;
+
+            std::wstringstream evidenceLine;
+            evidenceLine << L"[AegisUniversal] RE metadata evidence: " << module.name
+                         << L" | TDB " << moduleEvidence.tdbMagicCount
+                         << L" | via.* " << moduleEvidence.viaMarkerCount
+                         << L" | app.* " << moduleEvidence.appMarkerCount;
+            const std::wstring evidenceText = evidenceLine.str();
+            AppendTrace(evidenceText);
+            AppendLogLineW(evidenceText.c_str());
+
+            if (IsStrongReEvidence(reEvidence))
+                break;
+        }
+        g_reEvidence = reEvidence;
+
         if (profile.engineName &&
             std::wcscmp(profile.engineName, L"Godot") == 0 &&
             MainModuleHasEmbeddedPckSection())
@@ -427,8 +638,23 @@ namespace
             g_runtimeFlags |= AegisUniversalRuntime_ProcessHintMatched;
         }
 
-        if ((g_runtimeFlags & (AegisUniversalRuntime_ProcessHintMatched | AegisUniversalRuntime_ModuleHintMatched | AegisUniversalRuntime_ExportHintMatched)) != 0)
+        const bool knownReProcess = (g_runtimeFlags & AegisUniversalRuntime_ProcessHintMatched) != 0;
+        const bool metadataBackedRe = (g_runtimeFlags & AegisUniversalRuntime_HeuristicHintMatched) != 0 && IsStrongReEvidence(g_reEvidence);
+        const bool reFrameworkBacked = HasStrongReFrameworkSignal();
+        if (knownReProcess || metadataBackedRe || reFrameworkBacked)
             g_runtimeFlags |= AegisUniversalRuntime_EngineDetected;
+
+        std::wstringstream decisionLine;
+        decisionLine << L"[AegisUniversal] RE detection decision: known-process=" << (knownReProcess ? L"yes" : L"no")
+                     << L" | metadata-backed=" << (metadataBackedRe ? L"yes" : L"no")
+                     << L" | reframework-backed=" << (reFrameworkBacked ? L"yes" : L"no")
+                     << L" | total TDB " << g_reEvidence.tdbMagicCount
+                     << L" | total via.* " << g_reEvidence.viaMarkerCount
+                     << L" | total app.* " << g_reEvidence.appMarkerCount
+                     << L" | flags 0x" << std::hex << g_runtimeFlags;
+        const std::wstring decisionText = decisionLine.str();
+        AppendTrace(decisionText);
+        AppendLogLineW(decisionText.c_str());
 
         g_initialized = true;
     }
@@ -601,6 +827,11 @@ AEGIS_UNIVERSAL_API int AegisUniversal_WriteRuntimeReport(const wchar_t* reportP
     report << L"Matched modules: " << info.matchedModuleCount << L"\n";
     report << L"Matched exports: " << info.matchedExportCount << L"\n";
     report << L"Runtime flags: 0x" << std::hex << info.flags << std::dec << L"\n\n";
+    report << L"RE metadata evidence: first module "
+           << (g_firstEvidenceModule.empty() ? L"none" : g_firstEvidenceModule)
+           << L" | TDB " << g_reEvidence.tdbMagicCount
+           << L" | via.* " << g_reEvidence.viaMarkerCount
+           << L" | app.* " << g_reEvidence.appMarkerCount << L"\n\n";
 
     report << L"[Matched Exports]\n";
     for (const ExportRecord& record : g_exports)

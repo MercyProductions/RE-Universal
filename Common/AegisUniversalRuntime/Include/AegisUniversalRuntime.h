@@ -16,7 +16,8 @@ enum AegisUniversalRuntimeFlags : std::uint32_t
     AegisUniversalRuntime_ProcessHintMatched = 1u << 0,
     AegisUniversalRuntime_ModuleHintMatched = 1u << 1,
     AegisUniversalRuntime_ExportHintMatched = 1u << 2,
-    AegisUniversalRuntime_EngineDetected = 1u << 3
+    AegisUniversalRuntime_EngineDetected = 1u << 3,
+    AegisUniversalRuntime_HeuristicHintMatched = 1u << 4
 };
 
 enum AegisUniversalSignatureFlags : std::uint32_t

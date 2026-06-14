@@ -799,7 +799,7 @@ namespace
     {
         if (IsMainModule(module))
             return true;
-        if (module.flags != AegisUniversalSignature_None)
+        if ((module.flags & AegisUniversalSignature_Core) != 0)
             return true;
         if (!SameDirectoryAsProcess(module))
             return false;
