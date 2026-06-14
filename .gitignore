@@ -1,0 +1,41 @@
+# Build outputs
+build/
+bin/
+obj/
+x64/
+x86/
+Debug/
+Release/
+
+# Visual Studio user/workspace files
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+*.opendb
+*.sdf
+*.ipch
+
+# Native binaries and symbols
+*.dll
+*.exe
+*.lib
+*.exp
+*.pdb
+*.obj
+*.iobj
+*.ipdb
+
+# Logs and generated diagnostics
+*.log
+*.tlog
+*.lastbuildstate
+*.recipe
+REEngine_Universal_*
+
+# Local/editor noise
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak

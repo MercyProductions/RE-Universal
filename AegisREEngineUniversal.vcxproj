@@ -1,0 +1,75 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{6BDD1610-7A1D-4226-9969-17439BEAB8B5}</ProjectGuid>
+    <RootNamespace>AegisREEngineUniversal</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet></PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><WholeProgramOptimization>true</WholeProgramOptimization><CharacterSet>Unicode</CharacterSet></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)build\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)build\obj\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>AegisREEngineUniversal</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;AEGIS_UNIVERSAL_EXPORTS;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)Include;$(ProjectDir)Source;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;$(ProjectDir)ThirdParty\kiero;$(ProjectDir)ThirdParty\kiero\minhook\include;$(ProjectDir)ThirdParty\kiero\minhook\src;$(ProjectDir)ThirdParty\kiero\minhook\src\hde;$(ProjectDir)Common\AegisUniversalRuntime\Include;$(ProjectDir)Common\AegisUniversalRuntime\Source;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <Link><SubSystem>Windows</SubSystem><AdditionalDependencies>d3d9.lib;d3d11.lib;dxgi.lib;opengl32.lib;dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;AEGIS_UNIVERSAL_EXPORTS;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)Include;$(ProjectDir)Source;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;$(ProjectDir)ThirdParty\kiero;$(ProjectDir)ThirdParty\kiero\minhook\include;$(ProjectDir)ThirdParty\kiero\minhook\src;$(ProjectDir)ThirdParty\kiero\minhook\src\hde;$(ProjectDir)Common\AegisUniversalRuntime\Include;$(ProjectDir)Common\AegisUniversalRuntime\Source;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <Link><SubSystem>Windows</SubSystem><AdditionalDependencies>d3d9.lib;d3d11.lib;dxgi.lib;opengl32.lib;dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies><EnableCOMDATFolding>true</EnableCOMDATFolding><OptimizeReferences>true</OptimizeReferences></Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\AegisREEngineUniversal.h" />
+    <ClInclude Include="Source\AegisEngineProfile.generated.h" />
+    <ClInclude Include="Common\AegisUniversalRuntime\Include\AegisUniversalRuntime.h" />
+    <ClInclude Include="Common\AegisUniversalRuntime\Include\AegisUniversalOverlay.h" />
+    <ClInclude Include="Common\AegisUniversalRuntime\Source\AegisUniversalRuntimeInternal.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Source\REAdapter.cpp" />
+    <ClCompile Include="Source\REOverlayMenu.cpp" />
+    <ClCompile Include="Common\AegisUniversalRuntime\Source\AegisUniversalRuntime.cpp" />
+    <ClCompile Include="Common\AegisUniversalRuntime\Source\AegisUniversalSdk.cpp" />
+    <ClCompile Include="Common\AegisUniversalRuntime\Source\dllmain.cpp" />
+    <ClCompile Include="Common\AegisUniversalRuntime\Source\AegisUniversalOverlay.cpp" />
+    <ClCompile Include="ThirdParty\imgui\imgui.cpp" />
+    <ClCompile Include="ThirdParty\imgui\imgui_draw.cpp" />
+    <ClCompile Include="ThirdParty\imgui\imgui_tables.cpp" />
+    <ClCompile Include="ThirdParty\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_win32.cpp" />
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_dx9.cpp" />
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_dx11.cpp" />
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_opengl3.cpp" />
+    <ClCompile Include="ThirdParty\kiero\kiero.cpp" />
+    <ClCompile Include="ThirdParty\kiero\minhook\src\buffer.c" />
+    <ClCompile Include="ThirdParty\kiero\minhook\src\hook.c" />
+    <ClCompile Include="ThirdParty\kiero\minhook\src\trampoline.c" />
+    <ClCompile Include="ThirdParty\kiero\minhook\src\hde\hde32.c" />
+    <ClCompile Include="ThirdParty\kiero\minhook\src\hde\hde64.c" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

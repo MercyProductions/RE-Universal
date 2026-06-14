@@ -1,0 +1,38 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Include"><UniqueIdentifier>{2EC842B5-2A98-4E21-9200-00088367A838}</UniqueIdentifier></Filter>
+    <Filter Include="Source"><UniqueIdentifier>{95C2D84C-C858-4089-9CD3-E81FD0A3378E}</UniqueIdentifier></Filter>
+    <Filter Include="Shared Runtime"><UniqueIdentifier>{022A885E-4E42-4355-B8C6-873394655CA2}</UniqueIdentifier></Filter>
+    <Filter Include="ThirdParty"><UniqueIdentifier>{D9613464-A8C2-47CF-8445-9A8E2F29965B}</UniqueIdentifier></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Include\AegisREEngineUniversal.h"><Filter>Include</Filter></ClInclude>
+    <ClInclude Include="Source\AegisEngineProfile.generated.h"><Filter>Source</Filter></ClInclude>
+    <ClInclude Include="Common\AegisUniversalRuntime\Include\AegisUniversalRuntime.h"><Filter>Shared Runtime</Filter></ClInclude>
+    <ClInclude Include="Common\AegisUniversalRuntime\Include\AegisUniversalOverlay.h"><Filter>Shared Runtime</Filter></ClInclude>
+    <ClInclude Include="Common\AegisUniversalRuntime\Source\AegisUniversalRuntimeInternal.h"><Filter>Shared Runtime</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Source\REAdapter.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="Source\REOverlayMenu.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="Common\AegisUniversalRuntime\Source\AegisUniversalRuntime.cpp"><Filter>Shared Runtime</Filter></ClCompile>
+    <ClCompile Include="Common\AegisUniversalRuntime\Source\AegisUniversalSdk.cpp"><Filter>Shared Runtime</Filter></ClCompile>
+    <ClCompile Include="Common\AegisUniversalRuntime\Source\dllmain.cpp"><Filter>Shared Runtime</Filter></ClCompile>
+    <ClCompile Include="Common\AegisUniversalRuntime\Source\AegisUniversalOverlay.cpp"><Filter>Shared Runtime</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui.cpp"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui_draw.cpp"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui_tables.cpp"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui_widgets.cpp"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_win32.cpp"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_dx9.cpp"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_dx11.cpp"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_opengl3.cpp"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\kiero\kiero.cpp"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\kiero\minhook\src\buffer.c"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\kiero\minhook\src\hook.c"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\kiero\minhook\src\trampoline.c"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\kiero\minhook\src\hde\hde32.c"><Filter>ThirdParty</Filter></ClCompile>
+    <ClCompile Include="ThirdParty\kiero\minhook\src\hde\hde64.c"><Filter>ThirdParty</Filter></ClCompile>
+  </ItemGroup>
+</Project>

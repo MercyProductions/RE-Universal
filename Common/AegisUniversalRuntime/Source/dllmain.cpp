@@ -1,0 +1,254 @@
+#include "AegisUniversalRuntime.h"
+#include "AegisUniversalOverlay.h"
+#include "AegisREEngineUniversal.h"
+
+#include <Windows.h>
+
+#include <cstdio>
+#include <iostream>
+#include <sstream>
+#include <string>
+
+namespace
+{
+    std::wstring WidenAscii(const char* value)
+    {
+        std::wstring result;
+        if (!value)
+            return result;
+        while (*value)
+        {
+            result.push_back(static_cast<unsigned char>(*value));
+            ++value;
+        }
+        return result;
+    }
+
+    std::wstring TempFilePath(const wchar_t* fileName)
+    {
+        wchar_t tempPath[MAX_PATH] = {};
+        if (::GetTempPathW(MAX_PATH, tempPath) == 0)
+            return fileName ? std::wstring(fileName) : std::wstring();
+
+        std::wstring path = tempPath;
+        if (!path.empty() && path.back() != L'\\')
+            path.push_back(L'\\');
+        if (fileName)
+            path += fileName;
+        return path;
+    }
+
+    std::wstring ProfileSiblingPath(const wchar_t* suffix)
+    {
+        std::wstring name = AegisUniversal_GetReportFileName();
+        const std::wstring token = L"_Report.txt";
+        const std::size_t pos = name.rfind(token);
+        if (pos != std::wstring::npos && pos + token.size() == name.size())
+            name = name.substr(0, pos) + suffix;
+        else
+            name += suffix;
+        return TempFilePath(name.c_str());
+    }
+
+    void WriteStatusLine(const std::wstring& value)
+    {
+        AegisUniversal_LogW(value.c_str());
+    }
+
+    DWORD WINAPI BootstrapThread(void*)
+    {
+        ::FreeConsole();
+        if (::AllocConsole())
+        {
+            FILE* fDummy = nullptr;
+            freopen_s(&fDummy, "CONOUT$", "w", stdout);
+            freopen_s(&fDummy, "CONOUT$", "w", stderr);
+            freopen_s(&fDummy, "CONIN$", "r", stdin);
+            std::ios::sync_with_stdio(true);
+            std::wcout.clear();
+            std::cout.clear();
+            std::wcerr.clear();
+            std::cerr.clear();
+            std::wcin.clear();
+            std::cin.clear();
+            HWND consoleWindow = ::GetConsoleWindow();
+            if (consoleWindow)
+            {
+                ::ShowWindow(consoleWindow, SW_SHOW);
+                ::SetForegroundWindow(consoleWindow);
+            }
+        }
+
+        ::SetConsoleTitleW(L"Aegis Universal Engine Status");
+        WriteStatusLine(WidenAscii(AegisUniversal_GetBrandAsciiArt()));
+        WriteStatusLine(L"[AegisUniversal] Initializing " + std::wstring(AegisUniversal_GetEngineName()));
+
+        const bool detected = AegisUniversal_Initialize() != 0;
+        AegisUniversalRuntimeInfo info = {};
+        AegisUniversal_GetRuntimeInfo(&info);
+
+        std::wstringstream line;
+        line << L"[AegisUniversal] Engine detected: " << (detected ? L"yes" : L"no")
+             << L" | modules " << info.moduleCount
+             << L" | matched modules " << info.matchedModuleCount
+             << L" | matched exports " << info.matchedExportCount
+             << L" | flags 0x" << std::hex << info.flags;
+        WriteStatusLine(line.str());
+
+        if (info.detectedModule[0])
+            WriteStatusLine(L"[AegisUniversal] Detected module: " + std::wstring(info.detectedModule));
+
+        const bool overlayStarted = AegisUniversalOverlay_Start() != 0;
+        WriteStatusLine(std::wstring(L"[AegisUniversal] Internal ImGui overlay: ") +
+            (overlayStarted ? L"started" : L"not started") +
+            L" | F4 toggles menu | F2 probes RE console | D3D11/D3D9/OpenGL bridge auto-detect armed");
+
+        const std::uint32_t exportCount = AegisUniversal_GetMatchedExportCount();
+        const std::uint32_t maxConsoleExports = exportCount < 64 ? exportCount : 64;
+        for (std::uint32_t index = 0; index < maxConsoleExports; ++index)
+        {
+            AegisUniversalExportInfo exportInfo = {};
+            if (!AegisUniversal_GetMatchedExportInfo(index, &exportInfo))
+                continue;
+
+            std::wstringstream exportLine;
+            exportLine << L"[AegisUniversal] Export " << (index + 1) << L"/" << exportCount
+                       << L": " << exportInfo.moduleName << L"!" << WidenAscii(exportInfo.exportName)
+                       << L" = 0x" << std::hex << exportInfo.address;
+            WriteStatusLine(exportLine.str());
+        }
+        if (exportCount > maxConsoleExports)
+            WriteStatusLine(L"[AegisUniversal] Export console list truncated; full list is in the CSV.");
+
+        const std::wstring reportPath = TempFilePath(AegisUniversal_GetReportFileName());
+        AegisUniversal_WriteRuntimeReport(reportPath.c_str());
+        WriteStatusLine(L"[AegisUniversal] Report: " + reportPath);
+
+        const std::wstring modulesCsvPath = ProfileSiblingPath(L"_Modules.csv");
+        AegisUniversal_WriteModuleCsv(modulesCsvPath.c_str());
+        WriteStatusLine(L"[AegisUniversal] Modules CSV: " + modulesCsvPath);
+
+        const std::wstring exportsCsvPath = ProfileSiblingPath(L"_MatchedExports.csv");
+        AegisUniversal_WriteMatchedExportsCsv(exportsCsvPath.c_str());
+        WriteStatusLine(L"[AegisUniversal] Matched exports CSV: " + exportsCsvPath);
+
+        const std::wstring sdkJsonPath = ProfileSiblingPath(L"_SDK.json");
+        if (AegisUniversal_DumpSdkJson(sdkJsonPath.c_str()))
+            WriteStatusLine(L"[AegisUniversal] SDK JSON: " + sdkJsonPath);
+
+        const std::wstring sdkHeaderPath = ProfileSiblingPath(L"_SDK.h");
+        if (AegisUniversal_WriteSdkHeader(sdkHeaderPath.c_str()))
+            WriteStatusLine(L"[AegisUniversal] SDK header: " + sdkHeaderPath);
+
+        if (AegisUniversal_LoadSdkJson(sdkJsonPath.c_str()))
+        {
+            std::wstringstream sdkLine;
+            sdkLine << L"[AegisUniversal] SDK reloaded into resolver memory: "
+                    << AegisUniversal_GetLoadedSdkExportCount() << L" exports";
+            WriteStatusLine(sdkLine.str());
+        }
+
+        const std::wstring sdkMapPath = ProfileSiblingPath(L"_SDKMap.csv");
+        if (AegisUniversal_WriteSdkMapCsv(sdkMapPath.c_str()))
+            WriteStatusLine(L"[AegisUniversal] SDK map CSV: " + sdkMapPath);
+
+        const std::wstring sdkValidationPath = ProfileSiblingPath(L"_SDKValidation.json");
+        if (AegisUniversal_WriteSdkValidationJson(sdkValidationPath.c_str()))
+        {
+            AegisUniversalSdkValidationInfo validation = {};
+            AegisUniversal_ValidateLoadedSdk(&validation);
+
+            std::wstringstream validationLine;
+            validationLine << L"[AegisUniversal] SDK validation: "
+                           << validation.liveResolvedCount << L" live | "
+                           << validation.sdkOnlyCount << L" sdk-only | "
+                           << validation.staleRvaCount << L" stale RVA | "
+                           << validation.selfReferenceCount << L" self references";
+            WriteStatusLine(validationLine.str());
+            WriteStatusLine(L"[AegisUniversal] SDK validation JSON: " + sdkValidationPath);
+        }
+
+        if (AegisRE_RefreshResolver())
+        {
+            std::wstringstream reLine;
+            reLine << L"[AegisRE] Resolver refreshed: "
+                   << AegisRE_GetTypeCount() << L" type strings | "
+                   << AegisRE_GetHookCandidateCount() << L" hook candidates";
+            WriteStatusLine(reLine.str());
+        }
+
+        const bool consoleHotkeyStarted = AegisRE_StartConsoleHotkeyThread() != 0;
+        AegisREConsoleStats consoleStats = {};
+        if (AegisRE_GetConsoleStats(&consoleStats))
+        {
+            std::wstringstream consoleLine;
+            consoleLine << L"[AegisRE] Console probe: candidates "
+                        << consoleStats.candidateCount
+                        << L" | callable " << consoleStats.callableCandidateCount
+                        << L" | F2 hotkey " << (consoleHotkeyStarted ? L"armed" : L"failed");
+            WriteStatusLine(consoleLine.str());
+            WriteStatusLine(L"[AegisRE] Console details: " + std::wstring(consoleStats.details));
+        }
+
+        AegisREMetadataStats metadataStats = {};
+        if (AegisRE_GetMetadataStats(&metadataStats))
+        {
+            std::wstringstream metadataLine;
+            metadataLine << L"[AegisRE] Metadata backend: "
+                         << (metadataStats.metadataBackendReady ? L"TDB ready" : L"not ready")
+                         << L" | version " << metadataStats.tdbVersion
+                         << L" | types " << metadataStats.typeDefinitionCount
+                         << L" | fields " << metadataStats.fieldDefinitionCount
+                         << L" | methods " << metadataStats.methodDefinitionCount
+                         << L" | direct methods " << metadataStats.directMethodCount;
+            WriteStatusLine(metadataLine.str());
+            if (metadataStats.logPath[0])
+                WriteStatusLine(L"[AegisRE] Metadata backend log: " + std::wstring(metadataStats.logPath));
+        }
+
+        WriteStatusLine(L"[AegisRE] Full metadata JSON/CSV deferred; export from the RE Resolver tab when needed.");
+
+        AegisREWorldWalkerStats worldStats = {};
+        if (AegisRE_GetWorldWalkerStats(&worldStats))
+        {
+            std::wstringstream worldLine;
+            worldLine << L"[AegisRE] Internal world walker: "
+                      << (worldStats.ready ? L"ready" : L"no live components yet")
+                      << L" | roots " << worldStats.rootCount
+                      << L" | objects " << worldStats.visitedObjectCount
+                      << L" | components " << worldStats.componentCount
+                      << L" | fields " << worldStats.fieldReadCount;
+            WriteStatusLine(worldLine.str());
+        }
+
+        const std::wstring reWorldPath = ProfileSiblingPath(L"_WorldWalker.json");
+        if (AegisRE_WriteWorldWalkerReport(reWorldPath.c_str()))
+            WriteStatusLine(L"[AegisRE] World walker JSON: " + reWorldPath);
+
+        WriteStatusLine(L"[AegisRE] RE type SDK exports deferred; export from the RE Resolver tab when needed.");
+
+        WriteStatusLine(L"[AegisRE] Full resolver hook report deferred; export from the RE Resolver tab when needed.");
+
+        WriteStatusLine(L"[AegisUniversal] Trace: " + TempFilePath(AegisUniversal_GetTraceFileName()));
+        WriteStatusLine(L"[AegisUniversal] Log: " + TempFilePath(AegisUniversal_GetLogFileName()));
+        return 0;
+    }
+}
+
+BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
+{
+    if (reason == DLL_PROCESS_ATTACH)
+    {
+        ::DisableThreadLibraryCalls(module);
+        if (HANDLE thread = ::CreateThread(nullptr, 0, BootstrapThread, nullptr, 0, nullptr))
+            ::CloseHandle(thread);
+    }
+    else if (reason == DLL_PROCESS_DETACH)
+    {
+        AegisRE_StopConsoleHotkeyThread();
+        AegisUniversalOverlay_Stop();
+        AegisUniversal_Shutdown();
+    }
+
+    return TRUE;
+}
