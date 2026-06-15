@@ -168,6 +168,8 @@ namespace
             return;
         if (!ImGui::GetCurrentContext())
             return;
+        if (AegisRE_IsResolverBusy())
+            return;
 
         ImDrawList* drawList = ImGui::GetForegroundDrawList();
         if (!drawList)
@@ -208,6 +210,12 @@ namespace
     void DrawComponentTable()
     {
         ImGui::InputText("Component search", g_componentSearch, sizeof(g_componentSearch));
+        if (AegisRE_IsResolverBusy())
+        {
+            ImGui::TextUnformatted("Resolver is still running; component data will unlock when it completes.");
+            return;
+        }
+
         const std::uint32_t count = std::min<std::uint32_t>(AegisRE_GetComponentCount(), 512);
         if (ImGui::BeginTable("re-components", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
         {
@@ -448,16 +456,32 @@ extern "C" const char* AegisUniversalOverlay_GetEngineOverlayName()
 
 extern "C" void AegisUniversalOverlay_PollEngineProviders()
 {
+    if (AegisRE_IsResolverBusy())
+        return;
     AegisRE_UpdateProviders();
 }
 
 extern "C" void AegisUniversalOverlay_DrawEngineOverlay()
 {
+    if (AegisRE_IsResolverBusy())
+        return;
     DrawComponentOverlay();
 }
 
 extern "C" void AegisUniversalOverlay_DrawEngineMenu()
 {
+    if (AegisRE_IsResolverBusy())
+    {
+        if (ImGui::BeginTabItem("RE Resolver"))
+        {
+            ImGui::TextUnformatted("Resolver: running");
+            ImGui::TextWrapped("TDB metadata is still being decoded. The overlay is alive; resolver tables, component walking, and metadata views will unlock when this completes.");
+            ImGui::TextUnformatted("The console and REEngine_Universal_Log.txt will print RESOLVER COMPLETE when ready.");
+            ImGui::EndTabItem();
+        }
+        return;
+    }
+
     if (ImGui::BeginTabItem("RE Resolver"))
     {
         AegisRECapabilityInfo capability = {};

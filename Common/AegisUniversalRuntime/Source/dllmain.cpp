@@ -101,7 +101,7 @@ namespace
         const bool overlayStarted = AegisUniversalOverlay_Start() != 0;
         WriteStatusLine(std::wstring(L"[AegisUniversal] Internal ImGui overlay: ") +
             (overlayStarted ? L"started" : L"not started") +
-            L" | F4 toggles menu | F2 probes RE console | D3D11/D3D9/OpenGL bridge auto-detect armed");
+            L" | F4 toggles menu | F2 probes RE console | D3D11/D3D9/OpenGL hooks + D3D12/Vulkan fallback armed");
 
         const std::uint32_t exportCount = AegisUniversal_GetMatchedExportCount();
         const std::uint32_t maxConsoleExports = exportCount < 64 ? exportCount : 64;
@@ -168,13 +168,21 @@ namespace
             WriteStatusLine(L"[AegisUniversal] SDK validation JSON: " + sdkValidationPath);
         }
 
+        WriteStatusLine(L"[AegisRE] Resolver refresh started; TDB metadata decode can take a bit on larger RE titles.");
+        const ULONGLONG resolverStart = ::GetTickCount64();
         if (AegisRE_RefreshResolver())
         {
+            const ULONGLONG resolverElapsed = ::GetTickCount64() - resolverStart;
             std::wstringstream reLine;
-            reLine << L"[AegisRE] Resolver refreshed: "
+            reLine << L"[AegisRE] RESOLVER COMPLETE: "
                    << AegisRE_GetTypeCount() << L" type strings | "
-                   << AegisRE_GetHookCandidateCount() << L" hook candidates";
+                   << AegisRE_GetHookCandidateCount() << L" hook candidates | "
+                   << resolverElapsed << L"ms";
             WriteStatusLine(reLine.str());
+        }
+        else
+        {
+            WriteStatusLine(L"[AegisRE] Resolver refresh skipped or failed; check REEngine_Universal_Log.txt for details.");
         }
 
         const bool consoleHotkeyStarted = AegisRE_StartConsoleHotkeyThread() != 0;

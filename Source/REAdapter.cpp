@@ -252,6 +252,8 @@ namespace
 
     std::mutex g_mutex;
     std::mutex g_metadataLogMutex;
+    std::atomic_bool g_resolverBusy = false;
+    std::atomic_bool g_resolverReadyOnce = false;
     ProviderState g_providers;
     std::vector<AegisREComponentSnapshot> g_components;
     std::vector<TypeRecord> g_types;
@@ -294,6 +296,34 @@ namespace
     HANDLE g_consoleHotkeyThread = nullptr;
     std::atomic_bool g_consoleHotkeyStop = false;
     std::atomic_bool g_consoleHotkeyRunning = false;
+
+    struct ResolverBusyScope
+    {
+        const char* label = nullptr;
+        ULONGLONG startTick = 0;
+        bool active = false;
+
+        explicit ResolverBusyScope(const char* labelValue)
+            : label(labelValue), startTick(::GetTickCount64())
+        {
+            active = !g_resolverBusy.exchange(true);
+            if (active)
+                AegisUniversal_LogPrintfA("[AegisRE] %s started", label ? label : "Resolver work");
+            else
+                AegisUniversal_LogPrintfA("[AegisRE] %s requested while resolver is already busy; skipping", label ? label : "Resolver work");
+        }
+
+        ~ResolverBusyScope()
+        {
+            if (!active)
+                return;
+
+            const ULONGLONG elapsed = ::GetTickCount64() - startTick;
+            AegisUniversal_LogPrintfA("[AegisRE] RESOLVER COMPLETE: %s | elapsed %llums", label ? label : "Resolver work", static_cast<unsigned long long>(elapsed));
+            g_resolverReadyOnce.store(true);
+            g_resolverBusy.store(false);
+        }
+    };
 
     void RebuildProjectionStatsLocked();
     void BuildMetadataBackendLocked();
@@ -3999,7 +4029,9 @@ AEGIS_UNIVERSAL_API int AegisRE_UpdateProviders()
 {
     ProviderState providers = {};
     {
-        std::lock_guard<std::mutex> lock(g_mutex);
+        std::unique_lock<std::mutex> lock(g_mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            return 0;
         providers = g_providers;
     }
 
@@ -4025,7 +4057,9 @@ AEGIS_UNIVERSAL_API int AegisRE_UpdateProviders()
         hasViewport = DefaultViewport(viewport);
     LARGE_INTEGER afterViewport = NowCounter();
 
-    std::lock_guard<std::mutex> lock(g_mutex);
+    std::unique_lock<std::mutex> lock(g_mutex, std::try_to_lock);
+    if (!lock.owns_lock())
+        return 0;
     if (providers.componentProvider)
         g_components = std::move(components);
     if (hasMatrix)
@@ -4286,6 +4320,10 @@ AEGIS_UNIVERSAL_API void AegisRE_PrintCurrentComponents()
 
 AEGIS_UNIVERSAL_API int AegisRE_RefreshResolver()
 {
+    ResolverBusyScope busy("Resolver refresh");
+    if (!busy.active)
+        return 0;
+
     AegisUniversal_Refresh();
     std::lock_guard<std::mutex> lock(g_mutex);
     g_typeScanCompleted = false;
@@ -4300,8 +4338,17 @@ AEGIS_UNIVERSAL_API int AegisRE_RefreshResolver()
     return 1;
 }
 
+AEGIS_UNIVERSAL_API int AegisRE_IsResolverBusy()
+{
+    return (g_resolverBusy.load() || !g_resolverReadyOnce.load()) ? 1 : 0;
+}
+
 AEGIS_UNIVERSAL_API int AegisRE_ScanSdkTypes()
 {
+    ResolverBusyScope busy("Type SDK scan");
+    if (!busy.active)
+        return 0;
+
     std::lock_guard<std::mutex> lock(g_mutex);
     g_typeScanCompleted = false;
     BuildTypeCatalogLocked();
@@ -4530,6 +4577,10 @@ AEGIS_UNIVERSAL_API int AegisRE_WriteResolverReport(const wchar_t* path)
 
 AEGIS_UNIVERSAL_API int AegisRE_ScanMetadataBackend()
 {
+    ResolverBusyScope busy("Metadata backend scan");
+    if (!busy.active)
+        return 0;
+
     std::lock_guard<std::mutex> lock(g_mutex);
     g_metadataScanCompleted = false;
     g_hookScanCompleted = false;

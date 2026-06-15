@@ -92,6 +92,8 @@ namespace
     bool g_imguiRendererReady = false;
     std::uint64_t g_presentCount = 0;
     std::uint64_t g_resizeCount = 0;
+    std::atomic<std::uint64_t> g_imguiRenderedFrames{0};
+    std::atomic<bool> g_firstImguiRenderLogged{false};
     std::uint32_t g_backbufferWidth = 0;
     std::uint32_t g_backbufferHeight = 0;
     std::uint32_t g_backbufferFormat = 0;
@@ -181,6 +183,59 @@ namespace
         std::lock_guard lock(g_stateMutex);
         g_activeBackend = backend;
         g_selectedBackend = BackendName(backend);
+    }
+
+    bool HasRenderModule(const wchar_t* moduleName)
+    {
+        return moduleName && ::GetModuleHandleW(moduleName) != nullptr;
+    }
+
+    bool ShouldPreferStandaloneOverlay()
+    {
+        return HasRenderModule(L"d3d12.dll") ||
+            HasRenderModule(L"D3D12Core.dll") ||
+            HasRenderModule(L"vulkan-1.dll");
+    }
+
+    std::wstring DescribeWindow(HWND hwnd)
+    {
+        if (!hwnd)
+            return L"hwnd=none";
+
+        wchar_t title[128] = {};
+        wchar_t className[128] = {};
+        ::GetWindowTextW(hwnd, title, static_cast<int>(_countof(title)));
+        ::GetClassNameW(hwnd, className, static_cast<int>(_countof(className)));
+
+        RECT client = {};
+        ::GetClientRect(hwnd, &client);
+        const LONG width = std::max<LONG>(0, client.right - client.left);
+        const LONG height = std::max<LONG>(0, client.bottom - client.top);
+
+        std::wstringstream ss;
+        ss << L"hwnd=0x" << std::hex << reinterpret_cast<std::uintptr_t>(hwnd) << std::dec
+           << L" class=" << (className[0] ? className : L"<none>")
+           << L" title=" << (title[0] ? title : L"<none>")
+           << L" client=" << width << L"x" << height;
+        return ss.str();
+    }
+
+    void MarkImGuiFrameSubmitted(const wchar_t* backendName, const ImDrawData* drawData)
+    {
+        if (!drawData || drawData->TotalVtxCount <= 0)
+            return;
+
+        const std::uint64_t frame = ++g_imguiRenderedFrames;
+        if (g_firstImguiRenderLogged.exchange(true))
+            return;
+
+        std::wstringstream line;
+        line << L"ImGui render submitted: backend=" << (backendName ? backendName : L"unknown")
+             << L" | imguiFrames=" << frame
+             << L" | vertices=" << drawData->TotalVtxCount
+             << L" | backbuffer=" << g_backbufferWidth << L"x" << g_backbufferHeight
+             << L" | " << DescribeWindow(g_hwnd ? g_hwnd : g_overlayHwnd);
+        OverlayLogW(line.str().c_str());
     }
 
     bool EnsureImGuiContext()
@@ -390,6 +445,8 @@ namespace
         g_imguiRendererReady = true;
         SetSelectedBackend(ActiveBackend::D3D11);
         SetStatus(L"D3D11 Present captured; internal ImGui renderer is active");
+        std::wstring logLine = L"D3D11 ImGui initialized on " + DescribeWindow(swapDesc.OutputWindow);
+        OverlayLogW(logLine.c_str());
         return true;
     }
 
@@ -405,8 +462,10 @@ namespace
             if (ImGui::GetCurrentContext())
             {
                 ImGui::Render();
+                ImDrawData* drawData = ImGui::GetDrawData();
                 g_d3d11Context->OMSetRenderTargets(1, &g_d3d11RenderTarget, nullptr);
-                ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+                ImGui_ImplDX11_RenderDrawData(drawData);
+                MarkImGuiFrameSubmitted(L"D3D11", drawData);
             }
         }
 
@@ -449,6 +508,8 @@ namespace
         g_imguiRendererReady = true;
         SetSelectedBackend(ActiveBackend::D3D9);
         SetStatus(L"D3D9 EndScene captured; internal ImGui renderer is active");
+        std::wstring logLine = L"D3D9 ImGui initialized on " + DescribeWindow(params.hFocusWindow);
+        OverlayLogW(logLine.c_str());
         return true;
     }
 
@@ -471,7 +532,9 @@ namespace
             if (ImGui::GetCurrentContext())
             {
                 ImGui::Render();
-                ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+                ImDrawData* drawData = ImGui::GetDrawData();
+                ImGui_ImplDX9_RenderDrawData(drawData);
+                MarkImGuiFrameSubmitted(L"D3D9", drawData);
             }
         }
         return g_originalD3D9EndScene ? g_originalD3D9EndScene(device) : S_OK;
@@ -507,6 +570,8 @@ namespace
         g_imguiRendererReady = true;
         SetSelectedBackend(ActiveBackend::OpenGL);
         SetStatus(L"OpenGL SwapBuffers captured; internal ImGui renderer is active");
+        std::wstring logLine = L"OpenGL ImGui initialized on " + DescribeWindow(hwnd);
+        OverlayLogW(logLine.c_str());
         return true;
     }
 
@@ -529,7 +594,9 @@ namespace
             if (ImGui::GetCurrentContext())
             {
                 ImGui::Render();
-                ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+                ImDrawData* drawData = ImGui::GetDrawData();
+                ImGui_ImplOpenGL3_RenderDrawData(drawData);
+                MarkImGuiFrameSubmitted(L"OpenGL", drawData);
             }
         }
         return g_originalSwapBuffers ? g_originalSwapBuffers(hdc) : FALSE;
@@ -695,7 +762,7 @@ namespace
         ::RegisterClassExW(&wc);
 
         g_overlayHwnd = ::CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+            WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW,
             L"AegisOverlayClass",
             L"Aegis Overlay",
             WS_POPUP,
@@ -708,8 +775,8 @@ namespace
             return false;
         }
 
-        // Make window click-through by default, remove WS_EX_TRANSPARENT when menu is visible
-        ::SetLayeredWindowAttributes(g_overlayHwnd, RGB(0, 0, 0), 255, LWA_ALPHA);
+        // Make exact black transparent; the D3D clear color is transparent black.
+        ::SetLayeredWindowAttributes(g_overlayHwnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
 
         // Enable DWM transparency
         MARGINS margins = { -1 };
@@ -815,7 +882,7 @@ namespace
 
         // Wait for the game window
         HWND targetHwnd = nullptr;
-        for (int i = 0; i < 120 && g_running.load(); ++i)
+        for (int i = 0; i < 120 && g_running.load() && g_standaloneRunning.load(); ++i)
         {
             targetHwnd = FindGameWindow();
             if (targetHwnd)
@@ -903,10 +970,12 @@ namespace
             if (ImGui::GetCurrentContext())
             {
                 ImGui::Render();
+                ImDrawData* drawData = ImGui::GetDrawData();
                 const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
                 g_standaloneContext->OMSetRenderTargets(1, &g_standaloneRenderTarget, nullptr);
                 g_standaloneContext->ClearRenderTargetView(g_standaloneRenderTarget, clearColor);
-                ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+                ImGui_ImplDX11_RenderDrawData(drawData);
+                MarkImGuiFrameSubmitted(L"Standalone D3D11", drawData);
                 g_standaloneSwapChain->Present(1, 0);
             }
             ++g_presentCount;
@@ -981,25 +1050,62 @@ namespace
     bool VerifyHookIsAlive(const char* backendName, int timeoutMs = 3000)
     {
         char msg[256];
-        sprintf_s(msg, "%s hook installed - verifying it receives frames (waiting %dms)...", backendName, timeoutMs);
+        sprintf_s(msg, "%s hook installed - verifying ImGui render submission (waiting %dms)...", backendName, timeoutMs);
         OverlayLog(msg);
 
         const std::uint64_t countBefore = g_presentCount;
+        const std::uint64_t imguiBefore = g_imguiRenderedFrames.load();
         const int steps = timeoutMs / 100;
         for (int i = 0; i < steps && g_running.load(); ++i)
         {
             ::Sleep(100);
-            if (g_presentCount > countBefore)
+            if (g_imguiRenderedFrames.load() > imguiBefore)
             {
-                sprintf_s(msg, "%s hook is ALIVE - received %llu present calls", backendName,
-                    static_cast<unsigned long long>(g_presentCount - countBefore));
+                sprintf_s(msg, "%s hook + ImGui are ALIVE - presents=%llu imguiFrames=%llu", backendName,
+                    static_cast<unsigned long long>(g_presentCount - countBefore),
+                    static_cast<unsigned long long>(g_imguiRenderedFrames.load() - imguiBefore));
                 OverlayLog(msg);
                 return true;
             }
         }
 
+        if (g_presentCount > countBefore)
+        {
+            sprintf_s(msg, "%s hook received %llu presents, but ImGui submitted 0 frames in %dms. Trying another overlay path.",
+                backendName,
+                static_cast<unsigned long long>(g_presentCount - countBefore),
+                timeoutMs);
+            OverlayLog(msg);
+            return false;
+        }
+
         sprintf_s(msg, "%s hook is DEAD - no Present calls received in %dms. Module loaded but not used for rendering.", backendName, timeoutMs);
         OverlayLog(msg);
+        return false;
+    }
+
+    bool VerifyStandaloneOverlayAlive(int timeoutMs = 8000)
+    {
+        OverlayLog("Standalone overlay started - verifying ImGui render submission...");
+        const std::uint64_t imguiBefore = g_imguiRenderedFrames.load();
+        const int steps = timeoutMs / 100;
+        for (int i = 0; i < steps && g_running.load(); ++i)
+        {
+            ::Sleep(100);
+            if (g_imguiRenderedFrames.load() > imguiBefore)
+            {
+                char msg[256];
+                sprintf_s(msg, "Standalone overlay is ALIVE - imguiFrames=%llu",
+                    static_cast<unsigned long long>(g_imguiRenderedFrames.load() - imguiBefore));
+                OverlayLog(msg);
+                return true;
+            }
+            if (!g_standaloneRunning.load() && i > 5)
+                break;
+        }
+
+        OverlayLog("Standalone overlay did not submit ImGui frames; stopping fallback and trying render hooks.");
+        g_standaloneRunning.store(false);
         return false;
     }
 
@@ -1014,6 +1120,17 @@ namespace
             std::lock_guard lock(g_stateMutex);
             std::wstring logDetected = L"Detected render modules: " + g_detectedBackends;
             OverlayLogW(logDetected.c_str());
+        }
+
+        if (ShouldPreferStandaloneOverlay())
+        {
+            SetStatus(L"D3D12/Vulkan module detected; trying in-DLL standalone overlay fallback");
+            OverlayLog("D3D12/Vulkan module detected; trying in-DLL standalone overlay fallback first.");
+            if (TryInstallStandaloneOverlay())
+            {
+                if (VerifyStandaloneOverlayAlive())
+                    return 0;
+            }
         }
 
         // Phase 1: Try to hook into actual rendering backends

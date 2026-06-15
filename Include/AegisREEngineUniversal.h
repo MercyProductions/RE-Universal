@@ -352,6 +352,7 @@ AEGIS_UNIVERSAL_API int AegisRE_LoadSnapshotJson(const wchar_t* path);
 AEGIS_UNIVERSAL_API void AegisRE_PrintCurrentComponents();
 
 AEGIS_UNIVERSAL_API int AegisRE_RefreshResolver();
+AEGIS_UNIVERSAL_API int AegisRE_IsResolverBusy();
 AEGIS_UNIVERSAL_API int AegisRE_ScanSdkTypes();
 AEGIS_UNIVERSAL_API std::uint32_t AegisRE_GetTypeCount();
 AEGIS_UNIVERSAL_API int AegisRE_GetTypeInfo(std::uint32_t index, AegisRETypeInfo* outInfo);
