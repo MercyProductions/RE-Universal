@@ -43,6 +43,7 @@ namespace
     constexpr UINT kD3D11ResizeBuffersIndex = 13;
     constexpr UINT kD3D9ResetIndex = 16;
     constexpr UINT kD3D9EndSceneIndex = 42;
+    constexpr int kF4HotkeyId = 0xAE64;
 
     using D3D11PresentFn = HRESULT(__stdcall*)(IDXGISwapChain*, UINT, UINT);
     using D3D11ResizeBuffersFn = HRESULT(__stdcall*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
@@ -80,6 +81,8 @@ namespace
     std::atomic<bool> g_hooksInstalled{false};
     std::atomic<bool> g_menuVisible{true};
     std::atomic<bool> g_f4WasDown{false};
+    std::atomic<bool> g_hotkeyStop{false};
+    std::atomic<bool> g_hotkeyRunning{false};
     std::wstring g_status = L"not started";
     std::wstring g_detectedBackends = L"none";
     std::wstring g_selectedBackend = L"None";
@@ -107,6 +110,7 @@ namespace
     ID3D11RenderTargetView* g_standaloneRenderTarget = nullptr;
     std::atomic<bool> g_standaloneRunning{false};
     HANDLE g_standaloneThread = nullptr;
+    HANDLE g_hotkeyThread = nullptr;
 
     D3D11PresentFn g_originalD3D11Present = nullptr;
     D3D11ResizeBuffersFn g_originalD3D11ResizeBuffers = nullptr;
@@ -185,6 +189,40 @@ namespace
         g_selectedBackend = BackendName(backend);
     }
 
+    void ApplyStandaloneInputMode()
+    {
+        if (!g_overlayHwnd)
+            return;
+
+        LONG_PTR exStyle = ::GetWindowLongPtrW(g_overlayHwnd, GWL_EXSTYLE);
+        if (g_menuVisible.load())
+        {
+            if (exStyle & WS_EX_TRANSPARENT)
+                ::SetWindowLongPtrW(g_overlayHwnd, GWL_EXSTYLE, exStyle & ~WS_EX_TRANSPARENT);
+        }
+        else
+        {
+            if (!(exStyle & WS_EX_TRANSPARENT))
+                ::SetWindowLongPtrW(g_overlayHwnd, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT);
+        }
+    }
+
+    void SetMenuVisibleInternal(bool visible, const char* reason)
+    {
+        const bool previous = g_menuVisible.exchange(visible);
+        ApplyStandaloneInputMode();
+
+        if (previous == visible)
+            return;
+
+        char msg[160] = {};
+        sprintf_s(msg, "F4 menu %s%s%s",
+            visible ? "shown" : "hidden",
+            reason && reason[0] ? " via " : "",
+            reason && reason[0] ? reason : "");
+        OverlayLog(msg);
+    }
+
     bool HasRenderModule(const wchar_t* moduleName)
     {
         return moduleName && ::GetModuleHandleW(moduleName) != nullptr;
@@ -260,6 +298,15 @@ namespace
 
     LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
+        if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) &&
+            wParam == VK_F4 &&
+            (::GetKeyState(VK_MENU) & 0x8000) == 0 &&
+            (lParam & (1u << 30)) == 0)
+        {
+            AegisUniversalOverlay_ToggleMenu();
+            return 1;
+        }
+
         if (g_menuVisible.load() && g_imguiContextReady)
         {
             if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
@@ -294,9 +341,80 @@ namespace
     void PollHotkey()
     {
         const bool f4Down = (::GetAsyncKeyState(VK_F4) & 0x8000) != 0;
+        const bool altDown = (::GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
         const bool wasDown = g_f4WasDown.exchange(f4Down);
-        if (f4Down && !wasDown)
+        if (f4Down && !altDown && !wasDown)
             AegisUniversalOverlay_ToggleMenu();
+    }
+
+    DWORD WINAPI HotkeyThread(void*)
+    {
+        g_hotkeyRunning.store(true);
+        g_f4WasDown.store((::GetAsyncKeyState(VK_F4) & 0x8000) != 0);
+        OverlayLog("F4 menu hotkey thread started");
+        const bool registeredHotkey = ::RegisterHotKey(nullptr, kF4HotkeyId, MOD_NOREPEAT, VK_F4) != FALSE;
+        OverlayLog(registeredHotkey
+            ? "F4 menu hotkey registered with Windows"
+            : "F4 menu hotkey registration failed; using GetAsyncKeyState fallback");
+
+        while (g_running.load() && !g_hotkeyStop.load())
+        {
+            MSG msg = {};
+            while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+            {
+                if (msg.message == WM_HOTKEY && static_cast<int>(msg.wParam) == kF4HotkeyId)
+                {
+                    AegisUniversalOverlay_ToggleMenu();
+                    g_f4WasDown.store(true);
+                    continue;
+                }
+
+                ::TranslateMessage(&msg);
+                ::DispatchMessageW(&msg);
+            }
+
+            PollHotkey();
+            ::Sleep(25);
+        }
+
+        if (registeredHotkey)
+            ::UnregisterHotKey(nullptr, kF4HotkeyId);
+        g_hotkeyRunning.store(false);
+        g_f4WasDown.store(false);
+        OverlayLog("F4 menu hotkey thread stopped");
+        return 0;
+    }
+
+    bool StartHotkeyThread()
+    {
+        if (g_hotkeyThread)
+            return true;
+
+        g_hotkeyStop.store(false);
+        HANDLE thread = ::CreateThread(nullptr, 0, HotkeyThread, nullptr, 0, nullptr);
+        if (!thread)
+        {
+            OverlayLog("Failed to start F4 menu hotkey thread");
+            return false;
+        }
+
+        g_hotkeyThread = thread;
+        return true;
+    }
+
+    void StopHotkeyThread()
+    {
+        g_hotkeyStop.store(true);
+        HANDLE thread = g_hotkeyThread;
+        if (thread)
+        {
+            if (::GetCurrentThreadId() != ::GetThreadId(thread))
+                ::WaitForSingleObject(thread, 1000);
+            ::CloseHandle(thread);
+            g_hotkeyThread = nullptr;
+        }
+        g_hotkeyRunning.store(false);
+        g_f4WasDown.store(false);
     }
 
     void DrawCoreMenu()
@@ -311,7 +429,7 @@ namespace
         if (!ImGui::Begin("Aegis Universal", &open, ImGuiWindowFlags_NoCollapse))
         {
             ImGui::End();
-            g_menuVisible.store(open);
+            SetMenuVisibleInternal(open, "window");
             return;
         }
 
@@ -378,7 +496,7 @@ namespace
         }
 
         ImGui::End();
-        g_menuVisible.store(open);
+        SetMenuVisibleInternal(open, "window");
     }
 
     void DrawFrame()
@@ -730,6 +848,15 @@ namespace
 
     LRESULT CALLBACK StandaloneOverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
+        if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) &&
+            wParam == VK_F4 &&
+            (::GetKeyState(VK_MENU) & 0x8000) == 0 &&
+            (lParam & (1u << 30)) == 0)
+        {
+            AegisUniversalOverlay_ToggleMenu();
+            return 1;
+        }
+
         if (g_menuVisible.load() && g_imguiContextReady)
         {
             if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
@@ -859,20 +986,7 @@ namespace
                 SWP_NOACTIVATE);
         }
 
-        // Update click-through based on menu visibility
-        LONG_PTR exStyle = ::GetWindowLongPtrW(g_overlayHwnd, GWL_EXSTYLE);
-        if (g_menuVisible.load())
-        {
-            // Remove click-through when menu is visible
-            if (exStyle & WS_EX_TRANSPARENT)
-                ::SetWindowLongPtrW(g_overlayHwnd, GWL_EXSTYLE, exStyle & ~WS_EX_TRANSPARENT);
-        }
-        else
-        {
-            // Add click-through when menu is hidden
-            if (!(exStyle & WS_EX_TRANSPARENT))
-                ::SetWindowLongPtrW(g_overlayHwnd, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT);
-        }
+        ApplyStandaloneInputMode();
     }
 
     DWORD WINAPI StandaloneOverlayThread(void*)
@@ -1193,7 +1307,12 @@ namespace
 AEGIS_UNIVERSAL_API int AegisUniversalOverlay_Start()
 {
     if (g_running.exchange(true))
+    {
+        StartHotkeyThread();
         return 1;
+    }
+
+    StartHotkeyThread();
 
     if (HANDLE thread = ::CreateThread(nullptr, 0, InstallThread, nullptr, 0, nullptr))
     {
@@ -1202,6 +1321,7 @@ AEGIS_UNIVERSAL_API int AegisUniversalOverlay_Start()
     }
 
     g_running.store(false);
+    StopHotkeyThread();
     SetStatus(L"failed to create overlay install thread");
     return 0;
 }
@@ -1210,6 +1330,7 @@ AEGIS_UNIVERSAL_API void AegisUniversalOverlay_Stop()
 {
     g_running.store(false);
     g_standaloneRunning.store(false);
+    StopHotkeyThread();
 
     // Wait a moment for standalone thread to finish
     ::Sleep(200);
@@ -1272,12 +1393,12 @@ AEGIS_UNIVERSAL_API int AegisUniversalOverlay_IsMenuVisible()
 
 AEGIS_UNIVERSAL_API void AegisUniversalOverlay_SetMenuVisible(int visible)
 {
-    g_menuVisible.store(visible != 0);
+    SetMenuVisibleInternal(visible != 0, "API");
 }
 
 AEGIS_UNIVERSAL_API void AegisUniversalOverlay_ToggleMenu()
 {
-    g_menuVisible.store(!g_menuVisible.load());
+    SetMenuVisibleInternal(!g_menuVisible.load(), "F4");
 }
 
 AEGIS_UNIVERSAL_API const wchar_t* AegisUniversalOverlay_GetStatus()
