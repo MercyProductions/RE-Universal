@@ -32,7 +32,7 @@ namespace
     bool g_drawLabels = true;
     bool g_hideInvisible = false;
     bool g_liveOnly = true;
-    bool g_internalWalkerEnabled = true;
+    bool g_internalWalkerEnabled = false;
     bool g_players = true;
     bool g_npcs = true;
     bool g_ai = true;
@@ -679,8 +679,10 @@ extern "C" void AegisUniversalOverlay_DrawEngineMenu()
         if (ImGui::Checkbox("Enable internal world walker", &g_internalWalkerEnabled))
             AegisRE_SetInternalWorldWalkerEnabled(g_internalWalkerEnabled ? 1 : 0);
         ImGui::SameLine();
-        if (ImGui::Button("Force scan"))
+        if (g_internalWalkerEnabled && ImGui::Button("Force scan"))
             AegisRE_RunInternalWorldScan();
+        if (!g_internalWalkerEnabled)
+            ImGui::TextUnformatted("Force scan is disabled until the internal walker is explicitly enabled.");
         ImGui::SameLine();
         if (ImGui::Button("Export world JSON"))
             AegisRE_WriteWorldWalkerReport(nullptr);

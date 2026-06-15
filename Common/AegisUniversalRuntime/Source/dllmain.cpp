@@ -219,14 +219,22 @@ namespace
         AegisREWorldWalkerStats worldStats = {};
         if (AegisRE_GetWorldWalkerStats(&worldStats))
         {
+            const wchar_t* worldState = L"manual scan pending";
+            if (!worldStats.enabled)
+                worldState = L"disabled";
+            else if (worldStats.ready)
+                worldState = L"ready";
+
             std::wstringstream worldLine;
             worldLine << L"[AegisRE] Internal world walker: "
-                      << (worldStats.ready ? L"ready" : L"no live components yet")
+                      << worldState
                       << L" | roots " << worldStats.rootCount
                       << L" | objects " << worldStats.visitedObjectCount
                       << L" | components " << worldStats.componentCount
                       << L" | fields " << worldStats.fieldReadCount;
             WriteStatusLine(worldLine.str());
+            if (worldStats.details[0])
+                WriteStatusLine(L"[AegisRE] World walker details: " + std::wstring(worldStats.details));
         }
 
         const std::wstring reWorldPath = ProfileSiblingPath(L"_WorldWalker.json");

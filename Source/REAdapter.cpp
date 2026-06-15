@@ -40,10 +40,19 @@ namespace
     constexpr std::uint32_t kMaxMetadataMethods = 1000000;
     constexpr std::uint32_t kMaxMetadataFields = 1000000;
     constexpr std::uint32_t kMaxMetadataHookCandidates = 131072;
+    constexpr std::uint32_t kStartupMetadataTypes = 32768;
+    constexpr std::uint32_t kStartupMetadataFields = 65536;
+    constexpr std::uint32_t kStartupMetadataMethods = 131072;
+    constexpr ULONGLONG kStartupMetadataDecodeBudgetMs = 15000;
+    constexpr ULONGLONG kFullMetadataDecodeBudgetMs = 60000;
+    constexpr ULONGLONG kTdbCandidateValidationBudgetMs = 3000;
+    constexpr std::uint32_t kTdbCandidateTypeSamples = 256;
     constexpr std::uint32_t kMaxWorldRoots = 512;
     constexpr std::uint32_t kMaxWorldObjects = 8192;
     constexpr std::uint32_t kMaxWorldFieldReads = 250000;
     constexpr std::uint32_t kMaxWorldDepth = 6;
+    constexpr bool kEnableWorldWalkerByDefault = false;
+    constexpr bool kEnableAutomaticWorldWalkerTicks = false;
     constexpr bool kEnableTdbSingletonGetterRoots = false;
     constexpr bool kEnableAutomaticGlobalRootScan = false;
     constexpr ULONGLONG kWorldRootScanBudgetMs = 1500;
@@ -277,7 +286,7 @@ namespace
     std::vector<WorldRootCandidate> g_worldRoots;
     AegisREWorldWalkerStats g_worldStats = {};
     DWORD g_worldLastScanTick = 0;
-    bool g_worldWalkerEnabled = true;
+    bool g_worldWalkerEnabled = kEnableWorldWalkerByDefault;
     bool g_worldRootsScanned = false;
     std::uintptr_t g_worldInstanceScanCursor = 0;
     AegisREMatrix4x4 g_viewProjection = {};
@@ -290,6 +299,7 @@ namespace
     bool g_consoleScanCompleted = false;
     bool g_metadataScanCompleted = false;
     bool g_metadataBackendReady = false;
+    bool g_metadataFullDecodeRequested = false;
     std::uint32_t g_viaTypeCount = 0;
     std::uint32_t g_appTypeCount = 0;
     AegisREConsoleStats g_consoleStats = {};
@@ -1780,9 +1790,21 @@ namespace
             return false;
         }
 
-        const std::uint32_t samples = std::min<std::uint32_t>(out.numTypes, 1024);
+        const ULONGLONG validationStartTick = ::GetTickCount64();
+        const std::uint32_t samples = std::min<std::uint32_t>(out.numTypes, kTdbCandidateTypeSamples);
         for (std::uint32_t index = 0; index < samples; ++index)
         {
+            if ((index & 0x3Fu) == 0 && index != 0 &&
+                (::GetTickCount64() - validationStartTick) >= kTdbCandidateValidationBudgetMs)
+            {
+                out.flags |= AegisREMetadata_Truncated;
+                LogMetadata("TDB candidate validation budget hit at sample=%u addr=%s named=%u",
+                    static_cast<unsigned>(index),
+                    PointerHex(address).c_str(),
+                    static_cast<unsigned>(out.namedTypeSamples));
+                break;
+            }
+
             MetadataTypeRecord sample = {};
             if (!DecodeTypeRecord(out, index, sample))
                 continue;
@@ -1995,7 +2017,7 @@ namespace
             static_cast<unsigned long long>(elapsedMs()));
     }
 
-    void DecodeMetadataTablesLocked(const TdbCandidate& tdb)
+    void DecodeMetadataTablesLocked(const TdbCandidate& tdb, bool fullDecode)
     {
         g_metadataTypes.clear();
         g_metadataFields.clear();
@@ -2008,22 +2030,41 @@ namespace
         g_metadataNamedMethodCount = 0;
         g_metadataDirectMethodCount = 0;
 
-        const std::uint32_t typeLimit = std::min<std::uint32_t>(tdb.numTypes, kMaxMetadataTypes);
-        const std::uint32_t fieldLimit = std::min<std::uint32_t>(tdb.numFields, kMaxMetadataFields);
-        const std::uint32_t methodLimit = std::min<std::uint32_t>(tdb.numMethods, kMaxMetadataMethods);
+        const std::uint32_t typeHardLimit = fullDecode ? kMaxMetadataTypes : kStartupMetadataTypes;
+        const std::uint32_t fieldHardLimit = fullDecode ? kMaxMetadataFields : kStartupMetadataFields;
+        const std::uint32_t methodHardLimit = fullDecode ? kMaxMetadataMethods : kStartupMetadataMethods;
+        const ULONGLONG decodeBudgetMs = fullDecode ? kFullMetadataDecodeBudgetMs : kStartupMetadataDecodeBudgetMs;
+        const ULONGLONG decodeStartTick = ::GetTickCount64();
 
-        LogMetadata("Decoding metadata tables: raw types=%u fields=%u methods=%u limits=%u/%u/%u",
+        const std::uint32_t typeLimit = std::min<std::uint32_t>(tdb.numTypes, typeHardLimit);
+        const std::uint32_t fieldLimit = std::min<std::uint32_t>(tdb.numFields, fieldHardLimit);
+        const std::uint32_t methodLimit = std::min<std::uint32_t>(tdb.numMethods, methodHardLimit);
+
+        auto budgetExpired = [&]() {
+            return decodeBudgetMs > 0 && (::GetTickCount64() - decodeStartTick) >= decodeBudgetMs;
+        };
+
+        LogMetadata("Decoding metadata tables: mode=%s raw types=%u fields=%u methods=%u limits=%u/%u/%u budget=%llums",
+            fullDecode ? "full" : "startup",
             static_cast<unsigned>(tdb.numTypes),
             static_cast<unsigned>(tdb.numFields),
             static_cast<unsigned>(tdb.numMethods),
             static_cast<unsigned>(typeLimit),
             static_cast<unsigned>(fieldLimit),
-            static_cast<unsigned>(methodLimit));
+            static_cast<unsigned>(methodLimit),
+            static_cast<unsigned long long>(decodeBudgetMs));
 
         LARGE_INTEGER stageStart = NowCounter();
         g_metadataTypes.reserve(typeLimit);
         for (std::uint32_t index = 0; index < typeLimit; ++index)
         {
+            if ((index & 0x3FFu) == 0 && index != 0 && budgetExpired())
+            {
+                LogMetadata("Metadata decode budget hit during type table at index=%u", static_cast<unsigned>(index));
+                g_bestTdb.flags |= AegisREMetadata_Truncated;
+                break;
+            }
+
             MetadataTypeRecord record = {};
             if (!DecodeTypeRecord(tdb, index, record))
                 continue;
@@ -2043,6 +2084,13 @@ namespace
         g_metadataFields.reserve(std::min<std::uint32_t>(fieldLimit, 200000));
         for (std::uint32_t index = 0; index < fieldLimit; ++index)
         {
+            if ((index & 0x7FFu) == 0 && index != 0 && budgetExpired())
+            {
+                LogMetadata("Metadata decode budget hit during field table at index=%u", static_cast<unsigned>(index));
+                g_bestTdb.flags |= AegisREMetadata_Truncated;
+                break;
+            }
+
             MetadataFieldRecord record = {};
             if (!DecodeFieldRecord(tdb, index, record))
                 continue;
@@ -2061,6 +2109,13 @@ namespace
         g_metadataMethods.reserve(std::min<std::uint32_t>(methodLimit, 300000));
         for (std::uint32_t index = 0; index < methodLimit; ++index)
         {
+            if ((index & 0xFFFu) == 0 && index != 0 && budgetExpired())
+            {
+                LogMetadata("Metadata decode budget hit during method table at index=%u", static_cast<unsigned>(index));
+                g_bestTdb.flags |= AegisREMetadata_Truncated;
+                break;
+            }
+
             MetadataMethodRecord record = {};
             if (!DecodeMethodRecord(tdb, index, record))
                 continue;
@@ -3106,8 +3161,12 @@ namespace
         CollectTdbMagicCandidates(magicCandidates);
         LogMetadata("Found %u raw TDB magic candidates", static_cast<unsigned>(magicCandidates.size()));
 
+        bool foundStrongCandidate = false;
         for (std::uintptr_t address : magicCandidates)
         {
+            if (foundStrongCandidate)
+                break;
+
             std::uint32_t version = 0;
             if (!ReadU32(address + 4, version))
                 continue;
@@ -3136,6 +3195,11 @@ namespace
                         NarrowWide(candidate.moduleName).c_str());
                     if (!g_bestTdb.address || candidate.score > g_bestTdb.score)
                         g_bestTdb = candidate;
+                    if (candidate.namedTypeSamples >= 32)
+                    {
+                        foundStrongCandidate = true;
+                        break;
+                    }
                 }
                 else
                 {
@@ -3171,7 +3235,7 @@ namespace
         if (g_bestTdb.address)
         {
             g_metadataBackendReady = true;
-            DecodeMetadataTablesLocked(g_bestTdb);
+            DecodeMetadataTablesLocked(g_bestTdb, g_metadataFullDecodeRequested);
             LogMetadata("Best TDB selected addr=%s version=%u layout=%s types=%u methods=%u fields=%u stringPool=%s",
                 PointerHex(g_bestTdb.address).c_str(),
                 static_cast<unsigned>(g_bestTdb.version),
@@ -3864,6 +3928,8 @@ namespace
                     << L"; types=" << g_metadataTypes.size()
                     << L"; methods=" << g_metadataMethods.size()
                     << L"; fields=" << g_metadataFields.size();
+            if (g_bestTdb.flags & AegisREMetadata_Truncated)
+                details << L"; startup-safe/truncated";
         }
         else
         {
@@ -4072,8 +4138,17 @@ AEGIS_UNIVERSAL_API int AegisRE_UpdateProviders()
         g_viewport = viewport;
         g_hasViewport = true;
     }
-    if (!providers.componentProvider)
+    if (!providers.componentProvider && g_worldWalkerEnabled && kEnableAutomaticWorldWalkerTicks)
+    {
         WalkInternalWorldLocked(false);
+    }
+    else if (!providers.componentProvider && !g_worldStats.ready)
+    {
+        g_worldStats.enabled = g_worldWalkerEnabled ? 1 : 0;
+        CopyWide(g_worldStats.details, g_worldWalkerEnabled
+            ? L"Internal world walker is enabled, but automatic render-thread walking is disabled; use Force scan from the RE World tab."
+            : L"Internal world walker is disabled by default; enable it manually from the RE World tab before forcing a scan.");
+    }
 
     ++g_timing.frameId;
     g_timing.componentProviderMs = ElapsedMs(start, afterComponents);
@@ -4582,10 +4657,13 @@ AEGIS_UNIVERSAL_API int AegisRE_ScanMetadataBackend()
         return 0;
 
     std::lock_guard<std::mutex> lock(g_mutex);
+    const bool previousFullDecode = g_metadataFullDecodeRequested;
+    g_metadataFullDecodeRequested = true;
     g_metadataScanCompleted = false;
     g_hookScanCompleted = false;
     g_consoleScanCompleted = false;
     BuildMetadataBackendLocked();
+    g_metadataFullDecodeRequested = previousFullDecode;
     return g_metadataBackendReady ? 1 : 0;
 }
 
@@ -4872,6 +4950,13 @@ AEGIS_UNIVERSAL_API void AegisRE_SetInternalWorldWalkerEnabled(std::int32_t enab
     {
         g_worldStats.enabled = 0;
         g_worldStats.ready = 0;
+        CopyWide(g_worldStats.details, L"Internal world walker disabled. Automatic live object walking is off.");
+    }
+    else
+    {
+        g_worldStats.enabled = 1;
+        g_worldStats.ready = 0;
+        CopyWide(g_worldStats.details, L"Internal world walker enabled for manual scans only. Press Force scan to run one bounded walk.");
     }
     LogMetadata("Internal world walker %s", g_worldWalkerEnabled ? "enabled" : "disabled");
 }
@@ -4879,8 +4964,25 @@ AEGIS_UNIVERSAL_API void AegisRE_SetInternalWorldWalkerEnabled(std::int32_t enab
 AEGIS_UNIVERSAL_API int AegisRE_RunInternalWorldScan()
 {
     std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_worldWalkerEnabled)
+    {
+        g_worldStats.enabled = 0;
+        g_worldStats.ready = 0;
+        CopyWide(g_worldStats.details, L"Internal world walker is disabled; manual scan skipped.");
+        LogMetadata("Manual internal world walker scan skipped because walker is disabled");
+        return 0;
+    }
+
+    LogMetadata("Manual internal world walker scan started");
     g_worldRootsScanned = false;
     WalkInternalWorldLocked(true);
+    LogMetadata("Manual internal world walker scan complete: ready=%u roots=%u objects=%u components=%u fields=%u elapsed=%.2fms",
+        static_cast<unsigned>(g_worldStats.ready),
+        static_cast<unsigned>(g_worldStats.rootCount),
+        static_cast<unsigned>(g_worldStats.visitedObjectCount),
+        static_cast<unsigned>(g_worldStats.componentCount),
+        static_cast<unsigned>(g_worldStats.fieldReadCount),
+        g_worldStats.lastScanMs);
     return g_worldStats.ready ? 1 : 0;
 }
 
